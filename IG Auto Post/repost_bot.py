@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 import instaloader
-from InstagramAPI import InstagramAPI
+from instagrapi import Client
 import time
 import random
 from datetime import datetime, timedelta
@@ -132,15 +132,23 @@ class ReelReposter:
     
     def upload_video(self, video_path):
         """Upload video to your account"""
-        api = InstagramAPI(self.upload_account, self.upload_password)
+        client = Client()
         
-        if not api.login():
-            print("Login failed - check credentials")
+        try:
+            client.login(self.upload_account, self.upload_password)
+            print(f"Logged in as {self.upload_account}")
+        except Exception as e:
+            print(f"Login failed: {e}")
             return False
             
         try:
             print(f"Uploading {os.path.basename(video_path)}...")
-            api.uploadVideo(video_path, caption=self.caption)
+            
+            # Upload as reel
+            media = client.clip_upload(
+                video_path,
+                caption=self.caption
+            )
             
             # Move to processed folder
             filename = os.path.basename(video_path)
@@ -159,8 +167,6 @@ class ReelReposter:
         except Exception as e:
             print(f"Upload error: {e}")
             return False
-        finally:
-            api.logout()
     
     def catchup_mode(self):
         """Post 5 videos per hour until caught up"""
