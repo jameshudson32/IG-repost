@@ -41,7 +41,7 @@ class ReelReposter:
         return None
     
     def get_instaloader_session(self):
-        """Get Instaloader with proxy support"""
+        """Get Instaloader with proxy and session management"""
         L = instaloader.Instaloader(
             quiet=False,
             download_video_thumbnails=False,
@@ -59,7 +59,42 @@ class ReelReposter:
             L.context._session.proxies.update(proxies)
             print("Proxy configured for Instaloader")
         
+        # Try to load saved session
+        session_file = "session-" + self.upload_account
+        
+        try:
+            if os.path.exists(session_file):
+                print("Loading saved session...")
+                L.load_session_from_file(self.upload_account, session_file)
+                print("Session loaded successfully!")
+                
+                # Test if session is still valid
+                try:
+                    L.context.test_login()
+                    print("Session is valid!")
+                    return L
+                except:
+                    print("Session expired, will create new one")
+                    os.remove(session_file)
+        except Exception as e:
+            print(f"Session load failed: {e}")
+        
+        # Return without login - we'll login only if needed
+        print("Will attempt download without login first (public profiles only)")
         return L
+    
+    def login_if_needed(self, L):
+        """Login only if required"""
+        try:
+            print("Attempting login...")
+            L.login(self.upload_account, self.upload_password)
+            # Save session for future use
+            L.save_session_to_file("session-" + self.upload_account)
+            print("Login successful and session saved!")
+            return True
+        except Exception as e:
+            print(f"Login failed: {e}")
+            return False
         
     def setup_folders(self):
         """Create necessary folders"""
@@ -85,13 +120,8 @@ class ReelReposter:
         
         print(f"Downloading ALL reels from @{self.target_account} for catchup...")
         
-        # Login to avoid 401 errors
-        try:
-            L.login(self.upload_account, self.upload_password)
-            print("Logged in to Instagram for downloading")
-        except Exception as e:
-            print(f"Login failed: {e}")
-            return False
+        # First try without login (works for public profiles)
+        logged_in = False
         
         try:
             profile = instaloader.Profile.from_username(L.context, self.target_account)
@@ -105,17 +135,38 @@ class ReelReposter:
                     if not os.path.exists(video_file) and not os.path.exists(
                         os.path.join(self.processed_folder, f"{post.shortcode}.mp4")
                     ):
-                        L.download_post(post, target=self.download_folder)
-                        count += 1
-                        print(f"Downloaded reel #{count}: {post.shortcode}")
-                        
-                        # Small delay between downloads
-                        time.sleep(random.uniform(5, 15))
+                        try:
+                            L.download_post(post, target=self.download_folder)
+                            count += 1
+                            print(f"Downloaded reel #{count}: {post.shortcode}")
+                            
+                            # Delay between downloads
+                            time.sleep(random.uniform(15, 30))
+                        except Exception as dl_error:
+                            if "login" in str(dl_error).lower() and not logged_in:
+                                print("Login required for this content...")
+                                if self.login_if_needed(L):
+                                    logged_in = True
+                                    # Retry this download
+                                    L.download_post(post, target=self.download_folder)
+                                    count += 1
+                                    print(f"Downloaded reel #{count}: {post.shortcode}")
+                                else:
+                                    print("Skipping private content")
+                                    continue
+                            else:
+                                print(f"Download error for {post.shortcode}: {dl_error}")
                     
             print(f"Total new reels downloaded: {count}")
             return count > 0
             
         except Exception as e:
+            error_str = str(e).lower()
+            if "login" in error_str or "401" in error_str:
+                print("Profile might be private or login required...")
+                if not logged_in and self.login_if_needed(L):
+                    # Retry with login
+                    return self.download_all_reels()
             print(f"Download error: {e}")
             return False
     
@@ -123,13 +174,8 @@ class ReelReposter:
         """Download only the most recent reel for monitoring mode"""
         L = self.get_instaloader_session()
         
-        # Login to avoid 401 errors
-        try:
-            L.login(self.upload_account, self.upload_password)
-            print("Logged in to Instagram for downloading")
-        except Exception as e:
-            print(f"Login failed: {e}")
-            return False
+        print("Checking for new reels...")
+        logged_in = False
         
         try:
             profile = instaloader.Profile.from_username(L.context, self.target_account)
@@ -142,9 +188,20 @@ class ReelReposter:
                     
                     # Check if it's new
                     if not os.path.exists(video_file) and not os.path.exists(processed_file):
-                        L.download_post(post, target=self.download_folder)
-                        print(f"New reel found and downloaded: {post.shortcode}")
-                        return True
+                        try:
+                            L.download_post(post, target=self.download_folder)
+                            print(f"New reel found and downloaded: {post.shortcode}")
+                            return True
+                        except Exception as dl_error:
+                            if "login" in str(dl_error).lower() and not logged_in:
+                                print("Login required for download...")
+                                if self.login_if_needed(L):
+                                    logged_in = True
+                                    L.download_post(post, target=self.download_folder)
+                                    print(f"New reel found and downloaded: {post.shortcode}")
+                                    return True
+                            print(f"Download error: {dl_error}")
+                            return False
                     else:
                         print("No new reels found")
                         return False
@@ -152,7 +209,12 @@ class ReelReposter:
             return False
             
         except Exception as e:
-            print(f"Download error: {e}")
+            error_str = str(e).lower()
+            if ("login" in error_str or "401" in error_str) and not logged_in:
+                print("Login required...")
+                if self.login_if_needed(L):
+                    return self.download_latest_reel()
+            print(f"Check error: {e}")
             return False
     
     def get_unprocessed_videos(self, limit=None):
