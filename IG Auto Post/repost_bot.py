@@ -45,15 +45,24 @@ class ReelReposter:
     def download_all_reels(self):
         """Download ALL reels from target account for catchup"""
         L = instaloader.Instaloader(
-            quiet=True,
+            quiet=False,
             download_video_thumbnails=False,
             download_geotags=False,
             download_comments=False,
-            save_metadata=True,  # Keep metadata to track what's new
-            compress_json=False
+            save_metadata=True,
+            compress_json=False,
+            request_timeout=60
         )
         
         print(f"Downloading ALL reels from @{self.target_account} for catchup...")
+        
+        # Login to avoid 401 errors
+        try:
+            L.login(self.upload_account, self.upload_password)
+            print("Logged in to Instagram for downloading")
+        except Exception as e:
+            print(f"Login failed: {e}")
+            return False
         
         try:
             profile = instaloader.Profile.from_username(L.context, self.target_account)
@@ -84,13 +93,22 @@ class ReelReposter:
     def download_latest_reel(self):
         """Download only the most recent reel for monitoring mode"""
         L = instaloader.Instaloader(
-            quiet=True,
+            quiet=False,
             download_video_thumbnails=False,
             download_geotags=False,
             download_comments=False,
             save_metadata=True,
-            compress_json=False
+            compress_json=False,
+            request_timeout=60
         )
+        
+        # Login to avoid 401 errors
+        try:
+            L.login(self.upload_account, self.upload_password)
+            print("Logged in to Instagram for downloading")
+        except Exception as e:
+            print(f"Login failed: {e}")
+            return False
         
         try:
             profile = instaloader.Profile.from_username(L.context, self.target_account)
