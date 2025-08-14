@@ -1,6 +1,6 @@
 instaloader==4.10
-InstagramAPI
+instagrapi==2.0.0
 python-dotenv==1.0.0
 requests==2.31.0
-fake-useragent==1.4.0
 schedule==1.2.0
+Pillow==10.1.0
