@@ -1,22 +1,6 @@
 {
+  "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "NIXPACKS"
   },
-  "deploy": {
-    "startCommand": "python repost_bot.py",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 3
-  },
-  "variables": {
-    "DOWNLOAD_TARGET": {
-      "description": "Instagram account to download reels from",
-      "default": "fineshytreels"
-    },
-    "UPLOAD_ACCOUNT": {
-      "description": "mila.zeira"
-    },
-    "UPLOAD_PASSWORD": {
-      "description": "Connors1974"
-    }
-  }
-}
+  "deploy
