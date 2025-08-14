@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import json
 import shutil
 import schedule
+import urllib.parse
+import requests
 
 load_dotenv()
 
@@ -23,6 +25,41 @@ class ReelReposter:
         
         # Mode: 'catchup' or 'monitor'
         self.mode = self.load_state()
+        
+        # Proxy configuration
+        self.proxy_url = os.getenv('PROXY_URL')
+        if self.proxy_url:
+            print(f"Proxy configured: {self.proxy_url.split('@')[-1]}")
+    
+    def get_proxy_dict(self):
+        """Get proxy dictionary for requests"""
+        if self.proxy_url:
+            return {
+                'http': self.proxy_url,
+                'https': self.proxy_url
+            }
+        return None
+    
+    def get_instaloader_session(self):
+        """Get Instaloader with proxy support"""
+        L = instaloader.Instaloader(
+            quiet=False,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=True,
+            compress_json=False,
+            request_timeout=60,
+            max_connection_attempts=3
+        )
+        
+        # Configure proxy if available
+        if self.proxy_url:
+            proxies = self.get_proxy_dict()
+            L.context._session.proxies.update(proxies)
+            print("Proxy configured for Instaloader")
+        
+        return L
         
     def setup_folders(self):
         """Create necessary folders"""
@@ -44,15 +81,7 @@ class ReelReposter:
     
     def download_all_reels(self):
         """Download ALL reels from target account for catchup"""
-        L = instaloader.Instaloader(
-            quiet=False,
-            download_video_thumbnails=False,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=True,
-            compress_json=False,
-            request_timeout=60
-        )
+        L = self.get_instaloader_session()
         
         print(f"Downloading ALL reels from @{self.target_account} for catchup...")
         
@@ -92,15 +121,7 @@ class ReelReposter:
     
     def download_latest_reel(self):
         """Download only the most recent reel for monitoring mode"""
-        L = instaloader.Instaloader(
-            quiet=False,
-            download_video_thumbnails=False,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=True,
-            compress_json=False,
-            request_timeout=60
-        )
+        L = self.get_instaloader_session()
         
         # Login to avoid 401 errors
         try:
@@ -151,6 +172,11 @@ class ReelReposter:
     def upload_video(self, video_path):
         """Upload video to your account"""
         client = Client()
+        
+        # Configure proxy if available
+        if self.proxy_url:
+            client.set_proxy(self.proxy_url)
+            print("Proxy configured for upload")
         
         try:
             client.login(self.upload_account, self.upload_password)
