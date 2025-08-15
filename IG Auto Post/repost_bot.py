@@ -144,8 +144,8 @@ class ReelReposter:
                             count += 1
                             print(f"Downloaded reel #{count}: {post.shortcode}")
                             
-                            # Delay between downloads
-                            time.sleep(random.uniform(15, 30))
+                            # No delay between downloads - go fast!
+                            # time.sleep(random.uniform(15, 30))
                         except Exception as dl_error:
                             if "login" in str(dl_error).lower() and not logged_in:
                                 print("Login required for this content...")
@@ -238,16 +238,25 @@ class ReelReposter:
     def upload_video(self, video_path):
         """Upload video to your account using Upload Post SDK"""
         
+        print(f"\n=== STARTING UPLOAD ===")
+        print(f"Video path: {video_path}")
+        
         # Get API credentials
         api_key = os.getenv('UPLOAD_POST_API_KEY')
         managed_user = os.getenv('UPLOAD_POST_USER')  # Your managed user from upload-post.com
         
+        print(f"API Key present: {'Yes' if api_key else 'No'}")
+        print(f"Managed User: {managed_user if managed_user else 'NOT SET'}")
+        
         if not api_key:
             print("ERROR: UPLOAD_POST_API_KEY not set in environment variables!")
+            print("Set it in Railway with your Upload Post API key")
             return False
         
         if not managed_user:
             print("ERROR: UPLOAD_POST_USER not set in environment variables!")
+            print("This should be the username you created in Upload Post dashboard")
+            print("NOT your Instagram username!")
             return False
         
         # Check video file
@@ -331,8 +340,7 @@ class ReelReposter:
                                 
                                 # If we get 429, wait and retry with different proxy
                                 if "429" in error_str:
-                                    print(f"Rate limited on attempt {attempt + 1}, waiting 2 minutes...")
-                                    time.sleep(120)
+                                    print(f"Rate limited on attempt {attempt + 1}, trying different proxy immediately...")
                                     break  # Break inner loop to retry with different proxy
                                 
                                 # Skip login errors - just move to next video
@@ -352,8 +360,7 @@ class ReelReposter:
                 # Handle 429 rate limit
                 if "429" in error_str:
                     if attempt < 2:
-                        print(f"Rate limited, trying different proxy port...")
-                        time.sleep(30)
+                        print(f"Rate limited, trying different proxy port immediately...")
                         continue
                     else:
                         print("Rate limited on all proxy attempts")
@@ -382,55 +389,48 @@ class ReelReposter:
             if self.upload_video(unprocessed[0]):
                 print("Upload successful, waiting 30 minutes before next cycle...")
                 time.sleep(1800)  # 30 minutes
+            else:
+                print("Upload failed! Waiting 30 minutes before retry...")
+                time.sleep(1800)  # Still wait 30 mins even on failure
             return
         
-        # Add delay before attempting download to avoid rate limits
-        print("Waiting 2 minutes before attempting download...")
-        time.sleep(120)  # 2 minutes delay
-        
-        # Download one new reel
+        # Download one new reel immediately
         print("Downloading next reel...")
         if self.download_one_reel():
-            # Wait a bit before uploading (2-5 minutes)
-            delay = random.uniform(120, 300)
-            print(f"Downloaded successfully, waiting {int(delay/60)} minutes before uploading...")
-            time.sleep(delay)
-            
-            # Upload the video we just downloaded
+            # Upload immediately after download
             videos = self.get_unprocessed_videos(limit=1)
             if videos:
+                print(f"Uploading video immediately...")
                 if self.upload_video(videos[0]):
                     print("Upload successful, waiting 30 minutes before next download...")
                     time.sleep(1800)  # 30 minutes
                 else:
-                    print("Upload failed, waiting 5 minutes before retry...")
-                    time.sleep(300)  # 5 minutes on failure
+                    print("Upload failed, waiting 30 minutes before retry...")
+                    time.sleep(1800)  # 30 minutes
+            else:
+                print("ERROR: No video found after download!")
         else:
-            # Check if we have more content to process
+            # No more reels to download
+            print("No more reels to download - checking if we should switch to monitor mode")
+            
+            # Check if we have any unprocessed videos
             unprocessed = self.get_unprocessed_videos()
-            if unprocessed:
-                print(f"Download failed but found {len(unprocessed)} unprocessed videos")
-                return  # Will process them on next cycle
-            
-            # No more reels and no unprocessed videos
-            print("No more reels to download and no unprocessed videos - checking if we should switch to monitor mode")
-            
-            # Do one final check for any reels we might have missed
-            time.sleep(300)  # Wait 5 minutes before final check
-            if not self.download_one_reel() and not self.get_unprocessed_videos():
-                print("Confirmed: All reels processed - switching to monitor mode")
+            if not unprocessed:
+                print("All reels processed - switching to monitor mode")
                 self.mode = 'monitor'
                 self.save_state('monitor')
+            else:
+                print(f"Still have {len(unprocessed)} videos to process")
+                # Wait 30 minutes before checking again
+                time.sleep(1800)
     
     def monitor_mode(self):
         """Check for new reels and post immediately"""
         print("Running in MONITOR mode - checking for new reels")
         
         if self.download_latest_reel():
-            # Wait a bit before uploading to seem natural
-            delay = random.uniform(300, 900)  # 5-15 minutes
-            print(f"New reel detected! Waiting {int(delay/60)} minutes before uploading...")
-            time.sleep(delay)
+            # Upload immediately
+            print("New reel detected! Uploading immediately...")
             
             videos = self.get_unprocessed_videos(limit=1)
             if videos:
