@@ -118,68 +118,32 @@ class ReelReposter:
         with open(self.state_file, 'w') as f:
             json.dump({'mode': mode, 'last_update': str(datetime.now())}, f)
     
-    def download_all_reels(self):
-        """Download ALL reels from target account for catchup"""
-        L = self.get_instaloader_session()
+    def get_all_downloaded_files(self):
+        """Get a set of all video files that have been downloaded (in both folders)"""
+        all_files = set()
         
-        print(f"Downloading ALL reels from @{self.target_account} for catchup...")
+        # Check downloads folder
+        if os.path.exists(self.download_folder):
+            for file in os.listdir(self.download_folder):
+                if file.endswith('.mp4'):
+                    all_files.add(file)
         
-        # First try without login (works for public profiles)
-        logged_in = False
+        # Check processed folder
+        if os.path.exists(self.processed_folder):
+            for file in os.listdir(self.processed_folder):
+                if file.endswith('.mp4'):
+                    all_files.add(file)
         
-        try:
-            profile = instaloader.Profile.from_username(L.context, self.target_account)
-            
-            count = 0
-            for post in profile.get_posts():
-                # Only get reels/videos
-                if post.is_video and post.typename == 'GraphVideo':
-                    # Check if already downloaded
-                    video_file = os.path.join(self.download_folder, f"{post.shortcode}.mp4")
-                    if not os.path.exists(video_file) and not os.path.exists(
-                        os.path.join(self.processed_folder, f"{post.shortcode}.mp4")
-                    ):
-                        try:
-                            L.download_post(post, target=self.download_folder)
-                            count += 1
-                            print(f"Downloaded reel #{count}: {post.shortcode}")
-                            
-                            # No delay between downloads - go fast!
-                            # time.sleep(random.uniform(15, 30))
-                        except Exception as dl_error:
-                            if "login" in str(dl_error).lower() and not logged_in:
-                                print("Login required for this content...")
-                                if self.login_if_needed(L):
-                                    logged_in = True
-                                    # Retry this download
-                                    L.download_post(post, target=self.download_folder)
-                                    count += 1
-                                    print(f"Downloaded reel #{count}: {post.shortcode}")
-                                else:
-                                    print("Skipping private content")
-                                    continue
-                            else:
-                                print(f"Download error for {post.shortcode}: {dl_error}")
-                    
-            print(f"Total new reels downloaded: {count}")
-            return count > 0
-            
-        except Exception as e:
-            error_str = str(e).lower()
-            if "login" in error_str or "401" in error_str:
-                print("Profile might be private or login required...")
-                if not logged_in and self.login_if_needed(L):
-                    # Retry with login
-                    return self.download_all_reels()
-            print(f"Download error: {e}")
-            return False
+        return all_files
     
     def download_latest_reel(self):
         """Download only the most recent reel for monitoring mode"""
         L = self.get_instaloader_session()
         
         print("Checking for new reels...")
-        logged_in = False
+        
+        # Get current files before download
+        files_before = self.get_all_downloaded_files()
         
         try:
             profile = instaloader.Profile.from_username(L.context, self.target_account)
@@ -187,43 +151,39 @@ class ReelReposter:
             # Get the most recent post
             for post in profile.get_posts():
                 if post.is_video and post.typename == 'GraphVideo':
-                    video_file = os.path.join(self.download_folder, f"{post.shortcode}.mp4")
-                    processed_file = os.path.join(self.processed_folder, f"{post.shortcode}.mp4")
-                    
-                    # Check if it's new
-                    if not os.path.exists(video_file) and not os.path.exists(processed_file):
-                        try:
-                            L.download_post(post, target=self.download_folder)
-                            print(f"New reel found and downloaded: {post.shortcode}")
+                    # Download the post
+                    try:
+                        L.download_post(post, target=self.download_folder)
+                        
+                        # Check if a new file was created
+                        files_after = self.get_all_downloaded_files()
+                        new_files = files_after - files_before
+                        
+                        if new_files:
+                            print(f"New reel downloaded: {new_files}")
                             return True
-                        except Exception as dl_error:
-                            if "login" in str(dl_error).lower() and not logged_in:
-                                print("Login required for download...")
-                                if self.login_if_needed(L):
-                                    logged_in = True
-                                    L.download_post(post, target=self.download_folder)
-                                    print(f"New reel found and downloaded: {post.shortcode}")
-                                    return True
-                            print(f"Download error: {dl_error}")
+                        else:
+                            print("This reel was already downloaded")
                             return False
-                    else:
-                        print("No new reels found")
+                            
+                    except Exception as dl_error:
+                        print(f"Download error: {dl_error}")
                         return False
                         
+            print("No video reels found")
             return False
             
         except Exception as e:
-            error_str = str(e).lower()
-            if ("login" in error_str or "401" in error_str) and not logged_in:
-                print("Login required...")
-                if self.login_if_needed(L):
-                    return self.download_latest_reel()
             print(f"Check error: {e}")
             return False
     
     def get_unprocessed_videos(self, limit=None):
         """Find videos that haven't been uploaded yet"""
         videos = []
+        
+        if not os.path.exists(self.download_folder):
+            return videos
+            
         for file in os.listdir(self.download_folder):
             if file.endswith('.mp4'):
                 videos.append(os.path.join(self.download_folder, file))
@@ -315,41 +275,50 @@ class ReelReposter:
             try_different_proxy = (attempt > 0)  # Use different proxy on retries
             L = self.get_instaloader_session(try_different_proxy=try_different_proxy)
             
+            # Count videos before download
+            videos_before = len(self.get_unprocessed_videos())
+            print(f"Videos in download folder before: {videos_before}")
+            
             try:
                 profile = instaloader.Profile.from_username(L.context, self.target_account)
                 
-                # Get list of already downloaded/processed files
-                downloaded = set()
-                for file in os.listdir(self.download_folder):
-                    if file.endswith('.mp4'):
-                        downloaded.add(file.replace('.mp4', ''))
-                for file in os.listdir(self.processed_folder):
-                    if file.endswith('.mp4'):
-                        downloaded.add(file.replace('.mp4', ''))
+                # Get all files we've already downloaded/processed
+                existing_files = self.get_all_downloaded_files()
+                print(f"Already have {len(existing_files)} video files")
                 
-                # Find first reel we haven't downloaded
+                # Try to download any reel we don't have
+                download_count = 0
                 for post in profile.get_posts():
                     if post.is_video and post.typename == 'GraphVideo':
-                        if post.shortcode not in downloaded:
-                            try:
-                                L.download_post(post, target=self.download_folder)
-                                print(f"Downloaded reel: {post.shortcode}")
+                        try:
+                            # Just try to download - let Instaloader handle if it exists
+                            L.download_post(post, target=self.download_folder)
+                            
+                            # Check if we have more videos now
+                            videos_after = len(self.get_unprocessed_videos())
+                            if videos_after > videos_before:
+                                print(f"Successfully downloaded a new reel!")
                                 return True
-                            except Exception as dl_error:
-                                error_str = str(dl_error).lower()
+                            
+                            download_count += 1
+                            if download_count > 10:  # Don't try too many
+                                print("Tried 10 reels, none were new")
+                                break
                                 
-                                # If we get 429, wait and retry with different proxy
-                                if "429" in error_str:
-                                    print(f"Rate limited on attempt {attempt + 1}, trying different proxy immediately...")
-                                    break  # Break inner loop to retry with different proxy
+                        except Exception as dl_error:
+                            error_str = str(dl_error).lower()
+                            
+                            # If we get 429, wait and retry with different proxy
+                            if "429" in error_str:
+                                print(f"Rate limited on attempt {attempt + 1}, trying different proxy immediately...")
+                                break  # Break inner loop to retry with different proxy
+                            
+                            # Skip login errors - just move to next video
+                            if "login" in error_str:
+                                print("This reel requires login, skipping to next...")
+                                continue
                                 
-                                # Skip login errors - just move to next video
-                                if "login" in error_str:
-                                    print("This reel requires login, skipping to next...")
-                                    continue
-                                    
-                                print(f"Download error: {dl_error}")
-                                return False
+                            print(f"Download error: {dl_error}")
                 
                 print("No new reels found to download")
                 return False
@@ -386,6 +355,8 @@ class ReelReposter:
         if unprocessed:
             # Upload one existing video
             print(f"Found {len(unprocessed)} unprocessed videos, uploading one...")
+            print(f"Uploading: {unprocessed[0]}")
+            
             if self.upload_video(unprocessed[0]):
                 print("Upload successful, waiting 30 minutes before next cycle...")
                 time.sleep(1800)  # 30 minutes
@@ -397,10 +368,12 @@ class ReelReposter:
         # Download one new reel immediately
         print("Downloading next reel...")
         if self.download_one_reel():
-            # Upload immediately after download
+            # Check what we downloaded
             videos = self.get_unprocessed_videos(limit=1)
             if videos:
+                print(f"Found new video to upload: {videos[0]}")
                 print(f"Uploading video immediately...")
+                
                 if self.upload_video(videos[0]):
                     print("Upload successful, waiting 30 minutes before next download...")
                     time.sleep(1800)  # 30 minutes
@@ -408,7 +381,8 @@ class ReelReposter:
                     print("Upload failed, waiting 30 minutes before retry...")
                     time.sleep(1800)  # 30 minutes
             else:
-                print("ERROR: No video found after download!")
+                print("ERROR: Downloaded but no video found in folder!")
+                print(f"Download folder contents: {os.listdir(self.download_folder)}")
         else:
             # No more reels to download
             print("No more reels to download - checking if we should switch to monitor mode")
