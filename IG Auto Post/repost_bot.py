@@ -19,15 +19,31 @@ class ReelReposter:
         self.download_folder = "downloads"  # Let Instaloader handle subfolders
         self.processed_folder = "processed"
         self.state_file = "bot_state.json"
+        self.processed_posts_file = "processed_posts.json"
         self.caption = "#fyp #viral"
         
         # Mode: 'catchup' or 'monitor'
         self.mode = self.load_state()
         
+        # Load processed posts tracking
+        self.processed_posts = self.load_processed_posts()
+        
         # Proxy configuration
         self.proxy_url = os.getenv('PROXY_URL')
         if self.proxy_url:
             print(f"Proxy configured: {self.proxy_url.split('@')[-1]}")
+    
+    def load_processed_posts(self):
+        """Load list of posts we've already processed"""
+        if os.path.exists(self.processed_posts_file):
+            with open(self.processed_posts_file, 'r') as f:
+                return set(json.load(f))
+        return set()
+    
+    def save_processed_posts(self):
+        """Save list of processed posts"""
+        with open(self.processed_posts_file, 'w') as f:
+            json.dump(list(self.processed_posts), f)
     
     def get_proxy_dict(self):
         """Get proxy dictionary for requests"""
@@ -174,6 +190,11 @@ class ReelReposter:
             # Get the most recent post
             for post in profile.get_posts():
                 if post.is_video and post.typename == 'GraphVideo':
+                    # Check if we've already processed this post
+                    if post.shortcode in self.processed_posts:
+                        print(f"Latest reel {post.shortcode} already processed")
+                        return False
+                    
                     # Download the post
                     try:
                         L.download_post(post, target=profile.username)
@@ -184,9 +205,15 @@ class ReelReposter:
                         
                         if files_after > files_before:
                             print(f"New reel downloaded successfully!")
+                            # Mark as processed
+                            self.processed_posts.add(post.shortcode)
+                            self.save_processed_posts()
                             return True
                         else:
                             print("This reel was already downloaded")
+                            # Still mark as processed to avoid rechecking
+                            self.processed_posts.add(post.shortcode)
+                            self.save_processed_posts()
                             return False
                             
                     except Exception as dl_error:
@@ -273,6 +300,16 @@ class ReelReposter:
                     shutil.move(video_path, dest_path)
                     print(f"✓ Upload SUCCESSFUL! Moved {filename} to processed folder")
                     
+                    # Extract shortcode from filename if possible and mark as processed
+                    # This prevents re-downloading the same video
+                    for shortcode in self.processed_posts:
+                        if shortcode in filename:
+                            break
+                    else:
+                        # If we can't find the shortcode, add the filename itself
+                        base_name_no_ext = filename.rsplit('.', 1)[0]
+                        print(f"Marking as fully processed: {base_name_no_ext}")
+                    
                     # Also move metadata files if they exist
                     video_dir = os.path.dirname(video_path)
                     base_name = filename.rsplit('.', 1)[0]
@@ -317,36 +354,51 @@ class ReelReposter:
             # Count videos before download
             videos_before = self.get_unprocessed_videos()
             print(f"Videos in download folder before: {len(videos_before)}")
+            print(f"Already processed {len(self.processed_posts)} posts total")
             
             try:
                 profile = instaloader.Profile.from_username(L.context, self.target_account)
+                total_posts = profile.mediacount
+                print(f"Profile has {total_posts} total posts")
                 
-                # Get all MP4 files we already have
-                existing_files = self.find_all_mp4_files()
-                print(f"Total MP4 files in system: {len(existing_files)}")
+                # Track how many we've checked
+                posts_checked = 0
+                posts_skipped = 0
                 
                 # Try to download any reel we don't have
-                download_count = 0
                 for post in profile.get_posts():
                     if post.is_video and post.typename == 'GraphVideo':
+                        posts_checked += 1
+                        
+                        # Check if we've already processed this post
+                        if post.shortcode in self.processed_posts:
+                            posts_skipped += 1
+                            if posts_skipped % 50 == 0:  # Log every 50 skips
+                                print(f"Skipped {posts_skipped} already processed videos...")
+                            continue
+                        
+                        # This is a new video - try to download it
                         try:
-                            # Just try to download - let Instaloader handle if it exists
+                            print(f"Found new reel to download: {post.shortcode}")
+                            print(f"Post date: {post.date_local}")
+                            print(f"Attempting download (checked {posts_checked} posts so far)...")
+                            
                             L.download_post(post, target=profile.username)
                             
                             # Check if we have more videos now
                             videos_after = self.get_unprocessed_videos()
-                            print(f"Videos in download folder after: {len(videos_after)}")
                             
                             if len(videos_after) > len(videos_before):
-                                print(f"Successfully downloaded a new reel!")
-                                new_video = videos_after[0]  # Get the first (oldest) video
-                                print(f"New video path: {new_video}")
+                                print(f"✓ Successfully downloaded NEW reel: {post.shortcode}")
+                                # Mark this post as processed
+                                self.processed_posts.add(post.shortcode)
+                                self.save_processed_posts()
                                 return True
-                            
-                            download_count += 1
-                            if download_count > 10:  # Don't try too many
-                                print("Tried 10 reels, none were new")
-                                break
+                            else:
+                                # Download didn't create new file, but mark as processed anyway
+                                print("Download completed but no new file (might be non-video content)")
+                                self.processed_posts.add(post.shortcode)
+                                self.save_processed_posts()
                                 
                         except Exception as dl_error:
                             error_str = str(dl_error).lower()
@@ -356,14 +408,19 @@ class ReelReposter:
                                 print(f"Rate limited on attempt {attempt + 1}, trying different proxy immediately...")
                                 break  # Break inner loop to retry with different proxy
                             
-                            # Skip login errors - just move to next video
+                            # Skip login errors but mark as processed
                             if "login" in error_str:
-                                print("This reel requires login, skipping to next...")
+                                print("This reel requires login, marking as processed and skipping...")
+                                self.processed_posts.add(post.shortcode)
+                                self.save_processed_posts()
                                 continue
                                 
                             print(f"Download error: {dl_error}")
+                            continue
                 
-                print("No new reels found to download")
+                print(f"Checked all {posts_checked} video posts")
+                print(f"Already processed: {posts_skipped}")
+                print(f"No new downloadable reels found")
                 return False
                 
             except Exception as e:
@@ -392,6 +449,7 @@ class ReelReposter:
         """Download and post one reel at a time with 30 min intervals"""
         print("\n" + "="*50)
         print("Running in CATCHUP mode - download, post, wait 30 mins, repeat")
+        print(f"Already processed: {len(self.processed_posts)} posts")
         print("="*50 + "\n")
         
         # Check if we have any unprocessed videos first
@@ -399,12 +457,12 @@ class ReelReposter:
         
         if unprocessed:
             # Upload one existing video
-            print(f"Found {len(unprocessed)} unprocessed videos, uploading one...")
-            print(f"Video locations: {unprocessed[:3]}...")  # Show first 3
+            print(f"Found {len(unprocessed)} unprocessed videos in queue, uploading one...")
             print(f"Uploading: {unprocessed[0]}")
             
             if self.upload_video(unprocessed[0]):
                 print("\n✓ Upload successful, waiting 30 minutes before next cycle...")
+                print(f"Progress: {len(self.processed_posts)} posts completed")
                 time.sleep(1800)  # 30 minutes
             else:
                 print("\n✗ Upload failed! Waiting 30 minutes before retry...")
@@ -413,6 +471,8 @@ class ReelReposter:
         
         # Download one new reel immediately
         print("No unprocessed videos found, downloading next reel...")
+        print(f"Looking for new content (already processed {len(self.processed_posts)} posts)...")
+        
         if self.download_one_reel():
             # Check what we downloaded
             videos = self.get_unprocessed_videos(limit=1)
@@ -422,6 +482,7 @@ class ReelReposter:
                 
                 if self.upload_video(videos[0]):
                     print("\n✓ Upload successful, waiting 30 minutes before next download...")
+                    print(f"Progress: {len(self.processed_posts)} posts completed")
                     time.sleep(1800)  # 30 minutes
                 else:
                     print("\n✗ Upload failed, waiting 30 minutes before retry...")
@@ -442,7 +503,8 @@ class ReelReposter:
             # Check if we have any unprocessed videos
             unprocessed = self.get_unprocessed_videos()
             if not unprocessed:
-                print("All reels processed - switching to monitor mode")
+                print(f"All reels processed! Total: {len(self.processed_posts)} posts")
+                print("Switching to monitor mode")
                 self.mode = 'monitor'
                 self.save_state('monitor')
             else:
@@ -508,11 +570,24 @@ def main():
     print(f"Current directory: {os.getcwd()}")
     print(f"Directory contents: {os.listdir('.')}")
     
+    # Check for reset command
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == 'reset':
+        print("\nRESETTING BOT STATE...")
+        if os.path.exists('processed_posts.json'):
+            os.remove('processed_posts.json')
+            print("✓ Cleared processed posts tracking")
+        if os.path.exists('bot_state.json'):
+            os.remove('bot_state.json')
+            print("✓ Reset to catchup mode")
+        print("Bot reset complete! Starting fresh...\n")
+    
     bot = ReelReposter()
     
     # Check if we're in catchup mode
     if bot.mode == 'catchup':
-        print("Starting in CATCHUP mode - will download and post one reel every 30 minutes")
+        print(f"Starting in CATCHUP mode - will download and post one reel every 30 minutes")
+        print(f"Already processed: {len(bot.processed_posts)} posts")
         # In catchup mode, continuously download and post
         while bot.mode == 'catchup':
             bot.run_once()
