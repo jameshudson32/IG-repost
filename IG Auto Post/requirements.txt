@@ -1,6 +1,6 @@
 instaloader==4.10
-instagrapi==2.0.0
 python-dotenv==1.0.0
 requests==2.31.0
 schedule==1.2.0
-Pillow==10.1.0
+urllib3==2.1.0
+upload-post
