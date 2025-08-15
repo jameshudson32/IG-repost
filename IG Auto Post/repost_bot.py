@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
 import instaloader
-from instagrapi import Client
 import time
 import random
 from datetime import datetime, timedelta
@@ -10,14 +9,13 @@ import shutil
 import schedule
 import urllib.parse
 import requests
+from upload_post import UploadPostClient
 
 load_dotenv()
 
 class ReelReposter:
     def __init__(self):
         self.target_account = os.getenv('DOWNLOAD_TARGET', 'fineshytreels')
-        self.upload_account = os.getenv('UPLOAD_ACCOUNT', 'mila.zeira')
-        self.upload_password = os.getenv('UPLOAD_PASSWORD')
         self.download_folder = f"downloads/{self.target_account}"
         self.processed_folder = "processed"
         self.state_file = "bot_state.json"
@@ -40,7 +38,7 @@ class ReelReposter:
             }
         return None
     
-    def get_instaloader_session(self):
+    def get_instaloader_session(self, try_different_proxy=False):
         """Get Instaloader with proxy and session management"""
         L = instaloader.Instaloader(
             quiet=False,
@@ -50,22 +48,34 @@ class ReelReposter:
             save_metadata=True,
             compress_json=False,
             request_timeout=60,
-            max_connection_attempts=3
+            max_connection_attempts=1  # Don't retry on same proxy
         )
         
         # Configure proxy if available
         if self.proxy_url:
-            proxies = self.get_proxy_dict()
+            proxy_to_use = self.proxy_url
+            
+            # Try different proxy port if requested
+            if try_different_proxy:
+                current_port = int(self.proxy_url.split(':')[-1])
+                new_port = random.choice([p for p in range(10001, 10011) if p != current_port])
+                proxy_to_use = self.proxy_url.replace(str(current_port), str(new_port))
+                print(f"Switching to proxy port {new_port}")
+            
+            proxies = {
+                'http': proxy_to_use,
+                'https': proxy_to_use
+            }
             L.context._session.proxies.update(proxies)
             print("Proxy configured for Instaloader")
         
         # Try to load saved session
-        session_file = "session-" + self.upload_account
+        session_file = "session-downloader"
         
         try:
             if os.path.exists(session_file):
                 print("Loading saved session...")
-                L.load_session_from_file(self.upload_account, session_file)
+                L.load_session_from_file("downloader", session_file)
                 print("Session loaded successfully!")
                 
                 # Test if session is still valid
@@ -74,7 +84,7 @@ class ReelReposter:
                     print("Session is valid!")
                     return L
                 except:
-                    print("Session expired, will create new one")
+                    print("Session expired, will create new one if needed")
                     os.remove(session_file)
         except Exception as e:
             print(f"Session load failed: {e}")
@@ -84,17 +94,11 @@ class ReelReposter:
         return L
     
     def login_if_needed(self, L):
-        """Login only if required"""
-        try:
-            print("Attempting login...")
-            L.login(self.upload_account, self.upload_password)
-            # Save session for future use
-            L.save_session_to_file("session-" + self.upload_account)
-            print("Login successful and session saved!")
-            return True
-        except Exception as e:
-            print(f"Login failed: {e}")
-            return False
+        """Login only if required - using dummy account for downloads"""
+        # Since we're only downloading public content, we don't need login
+        # This method is kept for compatibility but returns False
+        print("Login not implemented for download-only mode")
+        return False
         
     def setup_folders(self):
         """Create necessary folders"""
@@ -232,47 +236,138 @@ class ReelReposter:
         return videos
     
     def upload_video(self, video_path):
-        """Upload video to your account"""
-        client = Client()
+        """Upload video to your account using Upload Post SDK"""
         
-        # Configure proxy if available
-        if self.proxy_url:
-            client.set_proxy(self.proxy_url)
-            print("Proxy configured for upload")
+        # Get API credentials
+        api_key = os.getenv('UPLOAD_POST_API_KEY')
+        managed_user = os.getenv('UPLOAD_POST_USER')  # Your managed user from upload-post.com
         
-        try:
-            client.login(self.upload_account, self.upload_password)
-            print(f"Logged in as {self.upload_account}")
-        except Exception as e:
-            print(f"Login failed: {e}")
+        if not api_key:
+            print("ERROR: UPLOAD_POST_API_KEY not set in environment variables!")
             return False
-            
+        
+        if not managed_user:
+            print("ERROR: UPLOAD_POST_USER not set in environment variables!")
+            return False
+        
+        # Check video file
+        if not os.path.exists(video_path):
+            print(f"Video file not found: {video_path}")
+            return False
+        
+        # Check file size (max 300MB for Instagram)
+        file_size = os.path.getsize(video_path) / (1024 * 1024)  # Size in MB
+        if file_size > 300:
+            print(f"Video file too large: {file_size:.1f}MB (max 300MB)")
+            return False
+        
         try:
-            print(f"Uploading {os.path.basename(video_path)}...")
+            print(f"Uploading {os.path.basename(video_path)} via Upload Post SDK...")
             
-            # Upload as reel
-            media = client.clip_upload(
-                video_path,
-                caption=self.caption
+            # Initialize the Upload Post client
+            client = UploadPostClient(api_key=api_key)
+            
+            # Upload the video
+            response = client.upload_video(
+                video_path=video_path,
+                title=self.caption,  # "#fyp #viral"
+                user=managed_user,
+                platforms=["instagram"]  # Just Instagram for now
             )
             
-            # Move to processed folder
-            filename = os.path.basename(video_path)
-            shutil.move(video_path, os.path.join(self.processed_folder, filename))
+            print(f"Upload response: {response}")
             
-            # Also move the metadata files if they exist
-            base_name = filename.rsplit('.', 1)[0]
-            for ext in ['.json', '.jpg', '.txt']:
-                meta_file = os.path.join(self.download_folder, base_name + ext)
-                if os.path.exists(meta_file):
-                    shutil.move(meta_file, os.path.join(self.processed_folder, base_name + ext))
-            
-            print(f"Upload successful at {datetime.now()}")
-            return True
-            
+            # If successful, move to processed folder
+            if response and response.get('success', False):
+                filename = os.path.basename(video_path)
+                shutil.move(video_path, os.path.join(self.processed_folder, filename))
+                
+                # Also move metadata files if they exist
+                base_name = filename.rsplit('.', 1)[0]
+                for ext in ['.json', '.jpg', '.txt']:
+                    meta_file = os.path.join(self.download_folder, base_name + ext)
+                    if os.path.exists(meta_file):
+                        shutil.move(meta_file, os.path.join(self.processed_folder, base_name + ext))
+                
+                print(f"Upload completed at {datetime.now()}")
+                return True
+            else:
+                print(f"Upload failed! Response: {response}")
+                return False
+                    
         except Exception as e:
             print(f"Upload error: {e}")
             return False
+    
+    def download_one_reel(self):
+        """Download just one reel that we haven't downloaded yet"""
+        # Try with current proxy first
+        for attempt in range(3):
+            try_different_proxy = (attempt > 0)  # Use different proxy on retries
+            L = self.get_instaloader_session(try_different_proxy=try_different_proxy)
+            
+            try:
+                profile = instaloader.Profile.from_username(L.context, self.target_account)
+                
+                # Get list of already downloaded/processed files
+                downloaded = set()
+                for file in os.listdir(self.download_folder):
+                    if file.endswith('.mp4'):
+                        downloaded.add(file.replace('.mp4', ''))
+                for file in os.listdir(self.processed_folder):
+                    if file.endswith('.mp4'):
+                        downloaded.add(file.replace('.mp4', ''))
+                
+                # Find first reel we haven't downloaded
+                for post in profile.get_posts():
+                    if post.is_video and post.typename == 'GraphVideo':
+                        if post.shortcode not in downloaded:
+                            try:
+                                L.download_post(post, target=self.download_folder)
+                                print(f"Downloaded reel: {post.shortcode}")
+                                return True
+                            except Exception as dl_error:
+                                error_str = str(dl_error).lower()
+                                
+                                # If we get 429, wait and retry with different proxy
+                                if "429" in error_str:
+                                    print(f"Rate limited on attempt {attempt + 1}, waiting 2 minutes...")
+                                    time.sleep(120)
+                                    break  # Break inner loop to retry with different proxy
+                                
+                                # Skip login errors - just move to next video
+                                if "login" in error_str:
+                                    print("This reel requires login, skipping to next...")
+                                    continue
+                                    
+                                print(f"Download error: {dl_error}")
+                                return False
+                
+                print("No new reels found to download")
+                return False
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                # Handle 429 rate limit
+                if "429" in error_str:
+                    if attempt < 2:
+                        print(f"Rate limited, trying different proxy port...")
+                        time.sleep(30)
+                        continue
+                    else:
+                        print("Rate limited on all proxy attempts")
+                        return False
+                
+                # Skip login-related errors
+                if "login" in error_str or "401" in error_str:
+                    print("Profile might be private or login required, skipping...")
+                    return False
+                    
+                print(f"Download error: {e}")
+                return False
+        
+        return False
     
     def catchup_mode(self):
         """Download and post one reel at a time with 30 min intervals"""
@@ -288,6 +383,10 @@ class ReelReposter:
                 print("Upload successful, waiting 30 minutes before next cycle...")
                 time.sleep(1800)  # 30 minutes
             return
+        
+        # Add delay before attempting download to avoid rate limits
+        print("Waiting 2 minutes before attempting download...")
+        time.sleep(120)  # 2 minutes delay
         
         # Download one new reel
         print("Downloading next reel...")
@@ -307,62 +406,21 @@ class ReelReposter:
                     print("Upload failed, waiting 5 minutes before retry...")
                     time.sleep(300)  # 5 minutes on failure
         else:
-            # No more reels to download
-            print("No more reels to download - switching to monitor mode")
-            self.mode = 'monitor'
-            self.save_state('monitor')
-    
-    def download_one_reel(self):
-        """Download just one reel that we haven't downloaded yet"""
-        L = self.get_instaloader_session()
-        logged_in = False
-        
-        try:
-            profile = instaloader.Profile.from_username(L.context, self.target_account)
+            # Check if we have more content to process
+            unprocessed = self.get_unprocessed_videos()
+            if unprocessed:
+                print(f"Download failed but found {len(unprocessed)} unprocessed videos")
+                return  # Will process them on next cycle
             
-            # Get list of already downloaded/processed files
-            downloaded = set()
-            for file in os.listdir(self.download_folder):
-                if file.endswith('.mp4'):
-                    downloaded.add(file.replace('.mp4', ''))
-            for file in os.listdir(self.processed_folder):
-                if file.endswith('.mp4'):
-                    downloaded.add(file.replace('.mp4', ''))
+            # No more reels and no unprocessed videos
+            print("No more reels to download and no unprocessed videos - checking if we should switch to monitor mode")
             
-            # Find first reel we haven't downloaded
-            for post in profile.get_posts():
-                if post.is_video and post.typename == 'GraphVideo':
-                    if post.shortcode not in downloaded:
-                        try:
-                            L.download_post(post, target=self.download_folder)
-                            print(f"Downloaded reel: {post.shortcode}")
-                            return True
-                        except Exception as dl_error:
-                            if "login" in str(dl_error).lower() and not logged_in:
-                                print("Login required for this content...")
-                                if self.login_if_needed(L):
-                                    logged_in = True
-                                    L.download_post(post, target=self.download_folder)
-                                    print(f"Downloaded reel: {post.shortcode}")
-                                    return True
-                                else:
-                                    print("Skipping private content")
-                                    continue
-                            else:
-                                print(f"Download error: {dl_error}")
-                                return False
-            
-            print("No new reels found to download")
-            return False
-            
-        except Exception as e:
-            error_str = str(e).lower()
-            if ("login" in error_str or "401" in error_str) and not logged_in:
-                print("Login required...")
-                if self.login_if_needed(L):
-                    return self.download_one_reel()
-            print(f"Download error: {e}")
-            return False
+            # Do one final check for any reels we might have missed
+            time.sleep(300)  # Wait 5 minutes before final check
+            if not self.download_one_reel() and not self.get_unprocessed_videos():
+                print("Confirmed: All reels processed - switching to monitor mode")
+                self.mode = 'monitor'
+                self.save_state('monitor')
     
     def monitor_mode(self):
         """Check for new reels and post immediately"""
