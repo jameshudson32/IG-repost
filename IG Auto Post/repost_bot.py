@@ -16,7 +16,7 @@ load_dotenv()
 class ReelReposter:
     def __init__(self):
         self.target_account = os.getenv('DOWNLOAD_TARGET', 'fineshytreels')
-        self.download_folder = f"downloads/{self.target_account}"
+        self.download_folder = "downloads"  # Let Instaloader handle subfolders
         self.processed_folder = "processed"
         self.state_file = "bot_state.json"
         self.caption = "#fyp #viral"
@@ -48,7 +48,8 @@ class ReelReposter:
             save_metadata=True,
             compress_json=False,
             request_timeout=60,
-            max_connection_attempts=1  # Don't retry on same proxy
+            max_connection_attempts=1,  # Don't retry on same proxy
+            dirname_pattern=self.download_folder  # Set download directory
         )
         
         # Configure proxy if available
@@ -118,23 +119,44 @@ class ReelReposter:
         with open(self.state_file, 'w') as f:
             json.dump({'mode': mode, 'last_update': str(datetime.now())}, f)
     
-    def get_all_downloaded_files(self):
-        """Get a set of all video files that have been downloaded (in both folders)"""
-        all_files = set()
+    def find_all_mp4_files(self):
+        """Find all MP4 files recursively in downloads and processed folders"""
+        all_files = []
         
-        # Check downloads folder
-        if os.path.exists(self.download_folder):
-            for file in os.listdir(self.download_folder):
+        # Search in downloads folder and all subfolders
+        for root, dirs, files in os.walk(self.download_folder):
+            for file in files:
                 if file.endswith('.mp4'):
-                    all_files.add(file)
+                    full_path = os.path.join(root, file)
+                    all_files.append(full_path)
         
-        # Check processed folder
-        if os.path.exists(self.processed_folder):
-            for file in os.listdir(self.processed_folder):
+        # Search in processed folder
+        for root, dirs, files in os.walk(self.processed_folder):
+            for file in files:
                 if file.endswith('.mp4'):
-                    all_files.add(file)
+                    full_path = os.path.join(root, file)
+                    all_files.append(full_path)
         
         return all_files
+    
+    def get_unprocessed_videos(self, limit=None):
+        """Find videos that haven't been uploaded yet"""
+        videos = []
+        
+        # Search recursively in downloads folder
+        for root, dirs, files in os.walk(self.download_folder):
+            for file in files:
+                if file.endswith('.mp4'):
+                    full_path = os.path.join(root, file)
+                    videos.append(full_path)
+        
+        # Sort by creation time (oldest first for catchup)
+        if videos:
+            videos.sort(key=lambda x: os.path.getctime(x))
+        
+        if limit:
+            return videos[:limit]
+        return videos
     
     def download_latest_reel(self):
         """Download only the most recent reel for monitoring mode"""
@@ -142,8 +164,9 @@ class ReelReposter:
         
         print("Checking for new reels...")
         
-        # Get current files before download
-        files_before = self.get_all_downloaded_files()
+        # Count MP4 files before download
+        files_before = len(self.find_all_mp4_files())
+        print(f"MP4 files before download: {files_before}")
         
         try:
             profile = instaloader.Profile.from_username(L.context, self.target_account)
@@ -153,14 +176,14 @@ class ReelReposter:
                 if post.is_video and post.typename == 'GraphVideo':
                     # Download the post
                     try:
-                        L.download_post(post, target=self.download_folder)
+                        L.download_post(post, target=profile.username)
                         
                         # Check if a new file was created
-                        files_after = self.get_all_downloaded_files()
-                        new_files = files_after - files_before
+                        files_after = len(self.find_all_mp4_files())
+                        print(f"MP4 files after download: {files_after}")
                         
-                        if new_files:
-                            print(f"New reel downloaded: {new_files}")
+                        if files_after > files_before:
+                            print(f"New reel downloaded successfully!")
                             return True
                         else:
                             print("This reel was already downloaded")
@@ -176,24 +199,6 @@ class ReelReposter:
         except Exception as e:
             print(f"Check error: {e}")
             return False
-    
-    def get_unprocessed_videos(self, limit=None):
-        """Find videos that haven't been uploaded yet"""
-        videos = []
-        
-        if not os.path.exists(self.download_folder):
-            return videos
-            
-        for file in os.listdir(self.download_folder):
-            if file.endswith('.mp4'):
-                videos.append(os.path.join(self.download_folder, file))
-        
-        # Sort by creation time (oldest first for catchup)
-        videos.sort(key=lambda x: os.path.getctime(x))
-        
-        if limit:
-            return videos[:limit]
-        return videos
     
     def upload_video(self, video_path):
         """Upload video to your account using Upload Post SDK"""
@@ -226,6 +231,7 @@ class ReelReposter:
         
         # Check file size (max 300MB for Instagram)
         file_size = os.path.getsize(video_path) / (1024 * 1024)  # Size in MB
+        print(f"Video size: {file_size:.1f}MB")
         if file_size > 300:
             print(f"Video file too large: {file_size:.1f}MB (max 300MB)")
             return False
@@ -249,12 +255,20 @@ class ReelReposter:
             # If successful, move to processed folder
             if response and response.get('success', False):
                 filename = os.path.basename(video_path)
-                shutil.move(video_path, os.path.join(self.processed_folder, filename))
+                dest_path = os.path.join(self.processed_folder, filename)
+                
+                # Create processed folder if needed
+                os.makedirs(self.processed_folder, exist_ok=True)
+                
+                # Move the file
+                shutil.move(video_path, dest_path)
+                print(f"Moved {filename} to processed folder")
                 
                 # Also move metadata files if they exist
+                video_dir = os.path.dirname(video_path)
                 base_name = filename.rsplit('.', 1)[0]
                 for ext in ['.json', '.jpg', '.txt']:
-                    meta_file = os.path.join(self.download_folder, base_name + ext)
+                    meta_file = os.path.join(video_dir, base_name + ext)
                     if os.path.exists(meta_file):
                         shutil.move(meta_file, os.path.join(self.processed_folder, base_name + ext))
                 
@@ -266,6 +280,9 @@ class ReelReposter:
                     
         except Exception as e:
             print(f"Upload error: {e}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def download_one_reel(self):
@@ -276,15 +293,15 @@ class ReelReposter:
             L = self.get_instaloader_session(try_different_proxy=try_different_proxy)
             
             # Count videos before download
-            videos_before = len(self.get_unprocessed_videos())
-            print(f"Videos in download folder before: {videos_before}")
+            videos_before = self.get_unprocessed_videos()
+            print(f"Videos in download folder before: {len(videos_before)}")
             
             try:
                 profile = instaloader.Profile.from_username(L.context, self.target_account)
                 
-                # Get all files we've already downloaded/processed
-                existing_files = self.get_all_downloaded_files()
-                print(f"Already have {len(existing_files)} video files")
+                # Get all MP4 files we already have
+                existing_files = self.find_all_mp4_files()
+                print(f"Total MP4 files in system: {len(existing_files)}")
                 
                 # Try to download any reel we don't have
                 download_count = 0
@@ -292,12 +309,16 @@ class ReelReposter:
                     if post.is_video and post.typename == 'GraphVideo':
                         try:
                             # Just try to download - let Instaloader handle if it exists
-                            L.download_post(post, target=self.download_folder)
+                            L.download_post(post, target=profile.username)
                             
                             # Check if we have more videos now
-                            videos_after = len(self.get_unprocessed_videos())
-                            if videos_after > videos_before:
+                            videos_after = self.get_unprocessed_videos()
+                            print(f"Videos in download folder after: {len(videos_after)}")
+                            
+                            if len(videos_after) > len(videos_before):
                                 print(f"Successfully downloaded a new reel!")
+                                new_video = videos_after[0]  # Get the first (oldest) video
+                                print(f"New video path: {new_video}")
                                 return True
                             
                             download_count += 1
@@ -355,6 +376,7 @@ class ReelReposter:
         if unprocessed:
             # Upload one existing video
             print(f"Found {len(unprocessed)} unprocessed videos, uploading one...")
+            print(f"Video locations: {unprocessed[:3]}...")  # Show first 3
             print(f"Uploading: {unprocessed[0]}")
             
             if self.upload_video(unprocessed[0]):
@@ -366,7 +388,7 @@ class ReelReposter:
             return
         
         # Download one new reel immediately
-        print("Downloading next reel...")
+        print("No unprocessed videos found, downloading next reel...")
         if self.download_one_reel():
             # Check what we downloaded
             videos = self.get_unprocessed_videos(limit=1)
@@ -382,7 +404,13 @@ class ReelReposter:
                     time.sleep(1800)  # 30 minutes
             else:
                 print("ERROR: Downloaded but no video found in folder!")
-                print(f"Download folder contents: {os.listdir(self.download_folder)}")
+                # Show what's in the downloads directory
+                print("Searching for MP4 files...")
+                for root, dirs, files in os.walk(self.download_folder):
+                    print(f"Directory: {root}")
+                    for file in files:
+                        if file.endswith('.mp4'):
+                            print(f"  Found: {file}")
         else:
             # No more reels to download
             print("No more reels to download - checking if we should switch to monitor mode")
@@ -408,6 +436,7 @@ class ReelReposter:
             
             videos = self.get_unprocessed_videos(limit=1)
             if videos:
+                print(f"Uploading: {videos[0]}")
                 self.upload_video(videos[0])
     
     def run_once(self):
@@ -449,6 +478,10 @@ class ReelReposter:
 
 def main():
     """Main entry point"""
+    print("=== Instagram Reel Reposter Bot Starting ===")
+    print(f"Current directory: {os.getcwd()}")
+    print(f"Directory contents: {os.listdir('.')}")
+    
     bot = ReelReposter()
     
     # Check if we're in catchup mode
