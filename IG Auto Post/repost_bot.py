@@ -20,7 +20,7 @@ class ReelReposter:
         self.processed_folder = "processed"
         self.state_file = "bot_state.json"
         self.processed_posts_file = "processed_posts.json"
-        self.caption = "#fyp #viral"
+        self.caption = "#fyp #viral #foryoupage"
         
         # Mode: 'catchup' or 'monitor'
         self.mode = self.load_state()
