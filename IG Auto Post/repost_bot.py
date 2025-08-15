@@ -211,7 +211,8 @@ class ReelReposter:
         managed_user = os.getenv('UPLOAD_POST_USER')  # Your managed user from upload-post.com
         
         print(f"API Key present: {'Yes' if api_key else 'No'}")
-        print(f"Managed User: {managed_user if managed_user else 'NOT SET'}")
+        print(f"API Key length: {len(api_key) if api_key else 0}")
+        print(f"Managed User: '{managed_user}'" if managed_user else "NOT SET")
         
         if not api_key:
             print("ERROR: UPLOAD_POST_API_KEY not set in environment variables!")
@@ -238,6 +239,9 @@ class ReelReposter:
         
         try:
             print(f"Uploading {os.path.basename(video_path)} via Upload Post SDK...")
+            print(f"Caption: {self.caption}")
+            print(f"User: {managed_user}")
+            print(f"Platforms: instagram")
             
             # Initialize the Upload Post client
             client = UploadPostClient(api_key=api_key)
@@ -250,36 +254,54 @@ class ReelReposter:
                 platforms=["instagram"]  # Just Instagram for now
             )
             
-            print(f"Upload response: {response}")
+            print(f"\nFull Upload Response:")
+            print(json.dumps(response, indent=2))
             
-            # If successful, move to processed folder
+            # Check if the API call succeeded
             if response and response.get('success', False):
-                filename = os.path.basename(video_path)
-                dest_path = os.path.join(self.processed_folder, filename)
-                
-                # Create processed folder if needed
-                os.makedirs(self.processed_folder, exist_ok=True)
-                
-                # Move the file
-                shutil.move(video_path, dest_path)
-                print(f"Moved {filename} to processed folder")
-                
-                # Also move metadata files if they exist
-                video_dir = os.path.dirname(video_path)
-                base_name = filename.rsplit('.', 1)[0]
-                for ext in ['.json', '.jpg', '.txt']:
-                    meta_file = os.path.join(video_dir, base_name + ext)
-                    if os.path.exists(meta_file):
-                        shutil.move(meta_file, os.path.join(self.processed_folder, base_name + ext))
-                
-                print(f"Upload completed at {datetime.now()}")
-                return True
+                # Check if Instagram upload actually succeeded
+                instagram_result = response.get('results', {}).get('instagram', {})
+                if instagram_result.get('success', False):
+                    # Actually successful - move to processed
+                    filename = os.path.basename(video_path)
+                    dest_path = os.path.join(self.processed_folder, filename)
+                    
+                    # Create processed folder if needed
+                    os.makedirs(self.processed_folder, exist_ok=True)
+                    
+                    # Move the file
+                    shutil.move(video_path, dest_path)
+                    print(f"✓ Upload SUCCESSFUL! Moved {filename} to processed folder")
+                    
+                    # Also move metadata files if they exist
+                    video_dir = os.path.dirname(video_path)
+                    base_name = filename.rsplit('.', 1)[0]
+                    for ext in ['.json', '.jpg', '.txt']:
+                        meta_file = os.path.join(video_dir, base_name + ext)
+                        if os.path.exists(meta_file):
+                            shutil.move(meta_file, os.path.join(self.processed_folder, base_name + ext))
+                    
+                    print(f"Upload completed at {datetime.now()}")
+                    return True
+                else:
+                    # Instagram upload failed
+                    error_msg = instagram_result.get('error', 'Unknown error')
+                    print(f"\n✗ Instagram upload FAILED!")
+                    print(f"Error: {error_msg}")
+                    print("\nPossible issues:")
+                    print("1. Check if managed user name matches EXACTLY in Upload Post dashboard")
+                    print(f"   You have: '{managed_user}'")
+                    print("2. Try disconnecting and reconnecting Instagram in Upload Post")
+                    print("3. Make sure 2FA is disabled on Instagram")
+                    print("\nVideo NOT moved - will retry on next cycle")
+                    return False
             else:
-                print(f"Upload failed! Response: {response}")
+                print(f"\n✗ API call failed!")
+                print(f"Response: {response}")
                 return False
                     
         except Exception as e:
-            print(f"Upload error: {e}")
+            print(f"\n✗ Upload error: {e}")
             print(f"Error type: {type(e)}")
             import traceback
             traceback.print_exc()
@@ -368,7 +390,9 @@ class ReelReposter:
     
     def catchup_mode(self):
         """Download and post one reel at a time with 30 min intervals"""
+        print("\n" + "="*50)
         print("Running in CATCHUP mode - download, post, wait 30 mins, repeat")
+        print("="*50 + "\n")
         
         # Check if we have any unprocessed videos first
         unprocessed = self.get_unprocessed_videos()
@@ -380,10 +404,10 @@ class ReelReposter:
             print(f"Uploading: {unprocessed[0]}")
             
             if self.upload_video(unprocessed[0]):
-                print("Upload successful, waiting 30 minutes before next cycle...")
+                print("\n✓ Upload successful, waiting 30 minutes before next cycle...")
                 time.sleep(1800)  # 30 minutes
             else:
-                print("Upload failed! Waiting 30 minutes before retry...")
+                print("\n✗ Upload failed! Waiting 30 minutes before retry...")
                 time.sleep(1800)  # Still wait 30 mins even on failure
             return
         
@@ -397,10 +421,10 @@ class ReelReposter:
                 print(f"Uploading video immediately...")
                 
                 if self.upload_video(videos[0]):
-                    print("Upload successful, waiting 30 minutes before next download...")
+                    print("\n✓ Upload successful, waiting 30 minutes before next download...")
                     time.sleep(1800)  # 30 minutes
                 else:
-                    print("Upload failed, waiting 30 minutes before retry...")
+                    print("\n✗ Upload failed, waiting 30 minutes before retry...")
                     time.sleep(1800)  # 30 minutes
             else:
                 print("ERROR: Downloaded but no video found in folder!")
@@ -428,7 +452,9 @@ class ReelReposter:
     
     def monitor_mode(self):
         """Check for new reels and post immediately"""
+        print("\n" + "="*50)
         print("Running in MONITOR mode - checking for new reels")
+        print("="*50 + "\n")
         
         if self.download_latest_reel():
             # Upload immediately
